@@ -7,7 +7,7 @@ module.exports = function(RED) {
 
         deviceNode.on('input', function(msg) {
 
-          var nodeDeviceId = formatUUID(config.id);
+          var nodeDeviceId = config.friendlyname;
 
           if ( nodeDeviceId == msg.deviceid ){
             msg.topic = config.topic;
@@ -61,25 +61,49 @@ module.exports = function(RED) {
         hubNode.on('input', function(msg) {
 
           if (config.enableinput &&
-            typeof msg.payload === "object" && "nodeid" in msg.payload && msg.payload.nodeid !== null){
+              typeof msg.payload === "object" && "nodeid" in msg.payload && msg.payload.nodeid !== null){
 
-            msg.payload.deviceid = formatUUID(msg.payload.nodeid);
-            delete msg.payload["nodeid"];
+              msg.payload.deviceid = msg.payload.nodeid;
+              delete msg.payload["nodeid"];
 
-            // Send payload if state is changed
-            var stateChanged = false;
-            var deviceAttributes = getDeviceAttributes(msg.payload.deviceid, hubNode.context());
-
-            for (var key in msg.payload) {
-              if (key in deviceAttributes && msg.payload[key] !== deviceAttributes[key]){
-                stateChanged = true;
+	      // Update state
+	      var deviceAttributes = getDeviceAttributes(msg.payload.deviceid, hubNode.context().flow);
+              for (var key in msg.payload) {
+                if (key in deviceAttributes && msg.payload[key] !== deviceAttributes[key]){
+                  deviceAttributes[key] = msg.payload[key];
+                }
               }
-            }
+              setDeviceAttributes(msg.payload.deviceid, msg.payload, hubNode.context().flow);
+     
+	      // Send command if input topic contains one of (bri, on, ct, hue)
+	      var body = null;
+	      var topic= msg.topic.toLowerCase();
+	      switch (true) {
 
-            if (stateChanged){
-              setDeviceAttributes(msg.payload.deviceid, msg.payload, hubNode.context());
-              payloadHandler(hubNode, msg.payload.deviceid);
-            }
+	      case ( (topic === 'on') || (topic === 'state') ):
+		  var body= {'on':deviceAttributes.on};
+		  break;
+
+	      case ( (topic === 'bri') || (topic === 'brightness') ):
+		  var body= {'bri':deviceAttributes.bri};
+		  break;
+
+	      case ( (topic === 'ct') || (topic === 'temperature') ):
+		  var body= {'ct':deviceAttributes.ct};
+		  break;
+
+	      case ( (topic === 'hue') || (topic === 'color') ):
+		  var body= {'hue':deviceAttributes.hue,'sat':deviceAttributes.sat};
+		  break;
+
+	      default:
+		  break;
+	      }
+
+	      if (body !== null) {
+		  payloadHandler(hubNode, msg.payload.deviceid, body);
+	      }
+      
           }
         });
 
@@ -157,7 +181,7 @@ module.exports = function(RED) {
         var template = fs.readFileSync(__dirname + '/api/hue/templates/state.json', 'utf8').toString();
 
         var data = {
-          lights: getDevicesAttributes(hubNode.context()),
+          lights: getDevicesAttributes(hubNode.context().flow),
           address: req.hostname,
           username: req.params.username,
           date: new Date().toISOString().split('.').shift()
@@ -174,7 +198,7 @@ module.exports = function(RED) {
         var template = fs.readFileSync(__dirname + '/api/hue/templates/lights/all.json', 'utf8').toString();
 
         var data = {
-          lights: getDevicesAttributes(hubNode.context()),
+          lights: getDevicesAttributes(hubNode.context().flow),
           date: new Date().toISOString().split('.').shift()
         }
 
@@ -195,7 +219,7 @@ module.exports = function(RED) {
             deviceName = device.name
         });
 
-        var data = getDeviceAttributes(req.params.id, hubNode.context());
+        var data = getDeviceAttributes(req.params.id, hubNode.context().flow);
         data.name = deviceName;
         data.date = new Date().toISOString().split('.').shift();
 
@@ -207,18 +231,19 @@ module.exports = function(RED) {
 
       app.put('/api/:username/lights/:id/state', function (req, res) {
 
-        setDeviceAttributes(req.params.id, req.body, hubNode.context());
+	//hubNode.warn(req);
+        setDeviceAttributes(req.params.id, req.body, hubNode.context().flow);
 
         var template = fs.readFileSync(__dirname + '/api/hue/templates/lights/set-state.json', 'utf8').toString();
 
-        var data = getDeviceAttributes(req.params.id, hubNode.context());
+        var data = getDeviceAttributes(req.params.id, hubNode.context().flow);
 
         var output = Mustache.render(template, data);
         output = JSON.parse(output);
 
         res.json(output);
 
-        payloadHandler(hubNode, req.params.id);
+        payloadHandler(hubNode, req.params.id, req.body);
       });
 
     }
@@ -288,7 +313,7 @@ module.exports = function(RED) {
 
       RED.nodes.eachNode(function(node){
         if ( node.type == "amazon-echo-device" ){
-          devices.push({id: formatUUID(node.id), name: node.name});
+          devices.push({id: node.friendlyname, name: node.name});
         }
       });
 
@@ -354,11 +379,11 @@ module.exports = function(RED) {
     //
     // Handlers
     //
-    function payloadHandler(hubNode, deviceId) {
+    function payloadHandler(hubNode, deviceId, body) {
 
-      var msg = getDeviceAttributes(deviceId, hubNode.context());
+      var msg = getDeviceAttributes(deviceId, hubNode.context().flow);
       msg.rgb = colorSHB2RGB(msg.hue, msg.sat, 254);
-      msg.payload = msg.on ? "on" : "off";
+      msg.payload = body
       msg.deviceid = deviceId;
       msg.topic = "";
 
